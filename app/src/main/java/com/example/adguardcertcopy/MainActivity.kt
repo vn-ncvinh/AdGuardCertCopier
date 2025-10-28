@@ -110,7 +110,7 @@ class MainActivity : ComponentActivity() {
             val result = Shell.cmd(*cmds.toTypedArray()).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài chứng chỉ thành công.\nĐường dẫn: $destPath")
-                promptSaveCert(pemFile) { startRebootCountdown(5) }
+                promptSaveCert(pemFile) { promptRestartAfterInstall() }
             } else {
                 val err = (result.out + result.err).joinToString("\n")
                 setStatus("Lỗi khi thực thi lệnh root.\n$err")
@@ -124,6 +124,21 @@ class MainActivity : ComponentActivity() {
             setStatus("Lỗi: ${e.message ?: e.toString()}")
             setButtonsEnabled(true)
         }
+    }
+
+    private fun promptRestartAfterInstall() {
+        AlertDialog.Builder(this)
+            .setTitle("Khởi động lại thiết bị?")
+            .setMessage("Chứng chỉ đã được cài đặt thành công!\n\n⚠️ LƯU Ý: Bạn cần khởi động lại thiết bị để các thay đổi được áp dụng hoàn toàn.")
+            .setPositiveButton("Khởi động lại ngay") { _, _ ->
+                startRebootCountdown(5)
+            }
+            .setNegativeButton("Để sau") { _, _ ->
+                binding.tvCountdown.text = "💡 Nhắc nhở: Hãy khởi động lại thiết bị để chứng chỉ có hiệu lực!"
+                setButtonsEnabled(true)
+            }
+            .setCancelable(false)
+            .show()
     }
 
     private fun startRebootCountdown(seconds: Int) {
@@ -242,7 +257,7 @@ class MainActivity : ComponentActivity() {
             val result = Shell.cmd(*cmds).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài từ chứng chỉ đã lưu: $name\n$destPath")
-                startRebootCountdown(5)
+                promptRestartAfterInstall()
             } else {
                 val err = (result.out + result.err).joinToString("\n")
                 setStatus("Lỗi root khi cài từ chứng chỉ đã lưu.\n$err")
