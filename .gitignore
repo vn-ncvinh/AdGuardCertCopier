@@ -1,0 +1,9 @@
+.idea
+.gradle
+build
+gradle
+release
+proguard-rules.pro
+gradlew
+gradlew.bat
+local.properties
