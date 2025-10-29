@@ -22,7 +22,7 @@
             android:id="@+id/tvSubtitle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Chọn chứng chỉ (PEM/DER/PKCS#12). App sẽ tự chuyển sang PEM và cài vào vị trí hệ thống (yêu cầu root)."
+            android:text="Chọn chứng chỉ từ file (PEM/DER/PKCS#12) hoặc tải từ Burp Suite. App sẽ tự chuyển sang PEM và cài vào vị trí hệ thống (yêu cầu root)."
             android:textSize="14sp"
             android:paddingBottom="16dp" />
 
@@ -53,6 +53,16 @@
         <Space
             android:layout_width="match_parent"
             android:layout_height="16dp" />
+
+        <Button
+            android:id="@+id/btnDownloadFromUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tải cert từ Burp Suite" />
+
+        <Space
+            android:layout_width="match_parent"
+            android:layout_height="12dp" />
 
         <Button
             android:id="@+id/btnSaved"

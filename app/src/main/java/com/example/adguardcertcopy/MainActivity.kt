@@ -18,6 +18,10 @@ import java.security.KeyStore
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import android.util.Base64
+import okhttp3.*
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.*
 
 class MainActivity : ComponentActivity() {
 
@@ -25,6 +29,13 @@ class MainActivity : ComponentActivity() {
 
     private val destDir  = "/data/adb/modules/adguardcert/system/etc/security/cacerts"
     private val destPath = "$destDir/9a5ba575.0"
+    
+    // OkHttp client for downloading certificates
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
 
     private val pickAny = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -68,6 +79,9 @@ class MainActivity : ComponentActivity() {
         }
         binding.btnPickP12.setOnClickListener {
             pickP12.launch(arrayOf("application/x-pkcs12", "*/*"))
+        }
+        binding.btnDownloadFromUrl.setOnClickListener {
+            showBurpSuiteDownloadDialog()
         }
         binding.btnSaved.setOnClickListener {
             showSavedListAndInstall()
@@ -164,7 +178,122 @@ class MainActivity : ComponentActivity() {
     private fun setButtonsEnabled(enabled: Boolean) {
         binding.btnPick.isEnabled = enabled
         binding.btnPickP12.isEnabled = enabled
+        binding.btnDownloadFromUrl.isEnabled = enabled
         binding.btnSaved.isEnabled = enabled
+    }
+
+    private fun showBurpSuiteDownloadDialog() {
+        // Create custom layout for IP and Port inputs
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(50, 20, 50, 20)
+        }
+        
+        val ipInput = EditText(this).apply {
+            hint = "IP Address (ví dụ: 192.168.4.100)"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setText("192.168.4.100") // Default IP
+        }
+        
+        val portInput = EditText(this).apply {
+            hint = "Port (ví dụ: 8080)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText("8080") // Default Burp Suite port
+        }
+        
+        container.addView(android.widget.TextView(this).apply {
+            text = "IP Address:"
+            setPadding(0, 0, 0, 10)
+        })
+        container.addView(ipInput)
+        
+        container.addView(android.widget.TextView(this).apply {
+            text = "Port:"
+            setPadding(0, 20, 0, 10)
+        })
+        container.addView(portInput)
+        
+        AlertDialog.Builder(this)
+            .setTitle("Tải chứng chỉ từ Burp Suite")
+            .setMessage("Nhập thông tin Burp Suite để tải chứng chỉ CA:")
+            .setView(container)
+            .setPositiveButton("Tải") { _, _ ->
+                val ip = ipInput.text?.toString()?.trim() ?: ""
+                val port = portInput.text?.toString()?.trim() ?: ""
+                if (ip.isNotEmpty() && port.isNotEmpty()) {
+                    downloadCertificateFromBurpSuite(ip, port)
+                } else {
+                    Toast.makeText(this, "Vui lòng nhập đầy đủ IP và Port", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun downloadCertificateFromBurpSuite(ip: String, port: String) {
+        setButtonsEnabled(false)
+        setStatus("Đang tải chứng chỉ từ Burp Suite ($ip:$port)...")
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val certUrl = "http://$ip:$port/cert"
+                val certData = downloadBurpSuiteCertificate(certUrl)
+
+                runOnUiThread {
+                    processBurpSuiteCertificateData(certData, ip, port)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    setStatus("Lỗi khi tải chứng chỉ từ Burp Suite: ${e.message}")
+                    setButtonsEnabled(true)
+                }
+            }
+        }
+    }
+
+    private suspend fun downloadBurpSuiteCertificate(certUrl: String): ByteArray = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(certUrl)
+            .build()
+
+        val response = httpClient.newCall(request).execute()
+        if (!response.isSuccessful) {
+            throw IOException("Không thể tải chứng chỉ từ Burp Suite. Kiểm tra:\n" +
+                    "1. Burp Suite đang chạy\n" +
+                    "2. IP và Port đúng\n" +
+                    "3. Proxy listener đã bật\n" +
+                    "Mã lỗi: ${response.code}")
+        }
+        
+        response.body?.bytes() ?: throw IOException("Phản hồi rỗng từ Burp Suite")
+    }
+
+    private fun processBurpSuiteCertificateData(certData: ByteArray, ip: String, port: String) {
+        try {
+            val tempFile = File(cacheDir, "burp_cert.tmp")
+            tempFile.writeBytes(certData)
+
+            // Burp Suite typically serves DER format certificates
+            processDownloadedCert(tempFile, sourceName = "Burp Suite ($ip:$port)")
+        } catch (e: Exception) {
+            setStatus("Lỗi khi xử lý chứng chỉ từ Burp Suite: ${e.message}")
+            setButtonsEnabled(true)
+        }
+    }
+
+    private fun processDownloadedCert(certFile: File, pkcs12Password: String? = null, sourceName: String = "Downloaded Certificate") {
+        try {
+            // Create a fake URI for the existing processing logic
+            val uri = Uri.fromFile(certFile)
+            
+            // Update status to show source
+            setStatus("Đang xử lý chứng chỉ từ $sourceName...")
+            
+            processAndCopy(uri, pkcs12Password)
+        } catch (e: Exception) {
+            setStatus("Lỗi khi xử lý chứng chỉ từ $sourceName: ${e.message}")
+            setButtonsEnabled(true)
+        }
     }
 
 
@@ -375,5 +504,12 @@ class MainActivity : ComponentActivity() {
 
     private fun setStatus(msg: String) {
         binding.tvStatus.text = msg
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Clean up HTTP client resources
+        httpClient.dispatcher.executorService.shutdown()
+        httpClient.connectionPool.evictAll()
     }
 }
