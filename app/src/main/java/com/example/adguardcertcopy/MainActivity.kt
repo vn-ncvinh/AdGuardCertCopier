@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.CountDownTimer
 import android.text.InputType
+import android.text.TextWatcher
 import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -358,14 +359,129 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Chưa có chứng chỉ nào được lưu.", Toast.LENGTH_SHORT).show()
             return
         }
-        AlertDialog.Builder(this)
-            .setTitle("Chọn chứng chỉ đã lưu để cài")
-            .setItems(names.toTypedArray()) { _, which ->
-                val name = names[which]
-                installFromSaved(name)
+        showCertManagementDialog(names)
+    }
+
+    private fun showCertManagementDialog(originalNames: List<String>) {
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(20, 20, 20, 20)
+        }
+
+        // Search input
+        val searchInput = EditText(this).apply {
+            hint = "Tìm kiếm chứng chỉ..."
+            inputType = InputType.TYPE_CLASS_TEXT
+            setPadding(16, 16, 16, 16)
+        }
+        container.addView(searchInput)
+
+        // Add some spacing
+        container.addView(android.widget.Space(this).apply {
+            minimumHeight = 20
+        })
+
+        // Create ListView for certificates with scroll support
+        val listView = android.widget.ListView(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                400 // Fixed height to enable scrolling
+            )
+        }
+        container.addView(listView)
+
+        var filteredNames = originalNames.toMutableList()
+        val adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_list_item_1, filteredNames)
+        listView.adapter = adapter
+
+        // Search functionality
+        searchInput.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val query = s?.toString()?.lowercase() ?: ""
+                filteredNames.clear()
+                if (query.isEmpty()) {
+                    filteredNames.addAll(originalNames)
+                } else {
+                    filteredNames.addAll(originalNames.filter { it.lowercase().contains(query) })
+                }
+                adapter.notifyDataSetChanged()
             }
+        })
+
+        // Handle item clicks - show options (Install/Delete)
+        listView.setOnItemClickListener { _, _, position, _ ->
+            if (position < filteredNames.size) {
+                val selectedName = filteredNames[position]
+                showCertOptionsDialog(selectedName) {
+                    // Refresh the list after operations
+                    val updatedNames = listSavedNames()
+                    if (updatedNames.isEmpty()) {
+                        Toast.makeText(this, "Không còn chứng chỉ nào được lưu.", Toast.LENGTH_SHORT).show()
+                        return@showCertOptionsDialog
+                    }
+                    // Update the current dialog
+                    filteredNames.clear()
+                    val currentQuery = searchInput.text?.toString()?.lowercase() ?: ""
+                    if (currentQuery.isEmpty()) {
+                        filteredNames.addAll(updatedNames)
+                    } else {
+                        filteredNames.addAll(updatedNames.filter { it.lowercase().contains(currentQuery) })
+                    }
+                    adapter.notifyDataSetChanged()
+                }
+            }
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Quản lý chứng chỉ đã lưu (${originalNames.size} chứng chỉ)")
+            .setView(container)
             .setNegativeButton("Đóng", null)
             .show()
+    }
+
+    private fun showCertOptionsDialog(certName: String, onActionComplete: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle("Chọn thao tác cho: $certName")
+            .setItems(arrayOf("Cài đặt chứng chỉ", "Xóa chứng chỉ")) { _, which ->
+                when (which) {
+                    0 -> { // Install
+                        installFromSaved(certName)
+                        onActionComplete()
+                    }
+                    1 -> { // Delete
+                        confirmDeleteCert(certName, onActionComplete)
+                    }
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun confirmDeleteCert(certName: String, onActionComplete: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle("Xác nhận xóa")
+            .setMessage("Bạn có chắc chắn muốn xóa chứng chỉ \"$certName\"?\n\nHành động này không thể hoàn tác.")
+            .setPositiveButton("Xóa") { _, _ ->
+                deleteSavedCert(certName)
+                onActionComplete()
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun deleteSavedCert(certName: String) {
+        try {
+            val file = File(savedDir(), "$certName.pem")
+            if (file.exists() && file.delete()) {
+                Toast.makeText(this, "Đã xóa chứng chỉ: $certName", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Không thể xóa chứng chỉ: $certName", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Lỗi khi xóa chứng chỉ: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun installFromSaved(name: String) {

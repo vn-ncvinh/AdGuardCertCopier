@@ -68,7 +68,7 @@
             android:id="@+id/btnSaved"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Danh sách chứng chỉ đã lưu" />
+            android:text="Quản lý chứng chỉ đã lưu" />
 
         <TextView
             android:id="@+id/tvStatus"
