@@ -21,6 +21,7 @@ import java.security.cert.X509Certificate
 import android.util.Base64
 import okhttp3.*
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 
@@ -52,16 +53,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private val pickP12 = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri == null) {
-            setStatus("Đã huỷ.")
-            return@registerForActivityResult
-        }
-        askPasswordAndProcess(uri)
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -77,9 +68,6 @@ class MainActivity : ComponentActivity() {
                 "application/x-pkcs12",
                 "*/*"
             ))
-        }
-        binding.btnPickP12.setOnClickListener {
-            pickP12.launch(arrayOf("application/x-pkcs12", "*/*"))
         }
         binding.btnDownloadFromUrl.setOnClickListener {
             showBurpSuiteDownloadDialog()
@@ -131,10 +119,6 @@ class MainActivity : ComponentActivity() {
                 setStatus("Lỗi khi thực thi lệnh root.\n$err")
                 setButtonsEnabled(true)
             }
-            // Note: don't delete pemFile if user wants to save; we saved by copying.
-            // Here we can safely delete temporary file.
-            
-
         } catch (e: Exception) {
             setStatus("Lỗi: ${e.message ?: e.toString()}")
             setButtonsEnabled(true)
@@ -178,7 +162,6 @@ class MainActivity : ComponentActivity() {
 
     private fun setButtonsEnabled(enabled: Boolean) {
         binding.btnPick.isEnabled = enabled
-        binding.btnPickP12.isEnabled = enabled
         binding.btnDownloadFromUrl.isEnabled = enabled
         binding.btnSaved.isEnabled = enabled
     }
@@ -282,15 +265,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun processDownloadedCert(certFile: File, pkcs12Password: String? = null, sourceName: String = "Downloaded Certificate") {
+    private fun processDownloadedCert(certFile: File, sourceName: String = "Downloaded Certificate") {
         try {
-            // Create a fake URI for the existing processing logic
             val uri = Uri.fromFile(certFile)
-            
-            // Update status to show source
             setStatus("Đang xử lý chứng chỉ từ $sourceName...")
-            
-            processAndCopy(uri, pkcs12Password)
+            processAndCopy(uri, null)
         } catch (e: Exception) {
             setStatus("Lỗi khi xử lý chứng chỉ từ $sourceName: ${e.message}")
             setButtonsEnabled(true)
@@ -299,8 +278,7 @@ class MainActivity : ComponentActivity() {
 
 
     private fun sanitizeName(raw: String): String {
-        var s = raw.trim()
-        // Thay các ký tự không hợp lệ & ký tự điều khiển (< 0x20) bằng '_'
+        var s = raw.trim().lowercase()
         s = s.map { c ->
             when {
                 c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
@@ -308,7 +286,6 @@ class MainActivity : ComponentActivity() {
                 else -> c
             }
         }.joinToString("")
-        // Gom khoảng trắng liên tiếp
         s = s.replace(Regex("\\s+"), " ")
         if (s.isEmpty()) s = "cert-" + System.currentTimeMillis().toString()
         if (s.length > 60) s = s.substring(0, 60)
@@ -322,38 +299,52 @@ class MainActivity : ComponentActivity() {
 
     private fun listSavedNames(): List<String> {
         val dir = savedDir()
-        return dir.listFiles()?.filter { it.isFile && it.name.endsWith(".pem") }?.map { it.nameWithoutExtension }?.sorted() ?: emptyList()
+        return dir.listFiles()?.filter { it.isFile && it.name.endsWith(".pem") }?.map { file ->
+            val md5 = calculateMd5(file)
+            "${file.nameWithoutExtension} [$md5]"
+        }?.sorted() ?: emptyList()
+    }
+
+    private fun calculateMd5(file: File): String {
+        val md = MessageDigest.getInstance("MD5")
+        file.inputStream().use { fis ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (fis.read(buffer).also { bytesRead = it } != -1) {
+                md.update(buffer, 0, bytesRead)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }.substring(0, 10)
     }
 
     private fun promptSaveCert(pemFile: File, onDone: () -> Unit = {}) {
-            val input = EditText(this).apply {
-                hint = "Tên chứng chỉ (ví dụ: Burp CA)"
-            }
-            AlertDialog.Builder(this)
-                .setTitle("Lưu chứng chỉ vừa cài?")
-                .setView(input)
-                .setPositiveButton("Lưu") { _, _ ->
-                    val raw = input.text?.toString() ?: ""
-                    val name = sanitizeName(raw)
-                    try {
-                        val dir = savedDir()
-                        val target = File(dir, "$name.pem")
-                        // Ensure directory exists
-                        if (!dir.exists()) dir.mkdirs()
-                        pemFile.copyTo(target, overwrite = true)
-                        Toast.makeText(this, "Đã lưu: ${target.name}", Toast.LENGTH_SHORT).show()
-                    } catch (e: Exception) {
-                        Toast.makeText(this, "Không lưu được: ${e.message}", Toast.LENGTH_LONG).show()
-                    } finally {
-                        onDone()
-                    }
-                }
-                .setNegativeButton("Không") { _, _ -> onDone() }
-                .setCancelable(false)
-                .show()
+        val input = EditText(this).apply {
+            hint = "Tên chứng chỉ (ví dụ: Burp CA)"
         }
+        AlertDialog.Builder(this)
+            .setTitle("Lưu chứng chỉ vừa cài?")
+            .setView(input)
+            .setPositiveButton("Lưu") { _, _ ->
+                val raw = input.text?.toString() ?: ""
+                val name = sanitizeName(raw)
+                try {
+                    val dir = savedDir()
+                    val target = File(dir, "$name.pem")
+                    if (!dir.exists()) dir.mkdirs()
+                    pemFile.copyTo(target, overwrite = true)
+                    Toast.makeText(this, "Đã lưu: ${target.name}", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Không lưu được: ${e.message}", Toast.LENGTH_LONG).show()
+                } finally {
+                    onDone()
+                }
+            }
+            .setNegativeButton("Không") { _, _ -> onDone() }
+            .setCancelable(false)
+            .show()
+    }
 
-        private fun showSavedListAndInstall() {
+    private fun showSavedListAndInstall() {
         val names = listSavedNames()
         if (names.isEmpty()) {
             Toast.makeText(this, "Chưa có chứng chỉ nào được lưu.", Toast.LENGTH_SHORT).show()
@@ -394,7 +385,6 @@ class MainActivity : ComponentActivity() {
         val adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_list_item_1, filteredNames)
         listView.adapter = adapter
 
-        // Search functionality
         searchInput.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -410,18 +400,15 @@ class MainActivity : ComponentActivity() {
             }
         })
 
-        // Handle item clicks - show options (Install/Delete)
         listView.setOnItemClickListener { _, _, position, _ ->
             if (position < filteredNames.size) {
                 val selectedName = filteredNames[position]
                 showCertOptionsDialog(selectedName) {
-                    // Refresh the list after operations
                     val updatedNames = listSavedNames()
                     if (updatedNames.isEmpty()) {
                         Toast.makeText(this, "Không còn chứng chỉ nào được lưu.", Toast.LENGTH_SHORT).show()
                         return@showCertOptionsDialog
                     }
-                    // Update the current dialog
                     filteredNames.clear()
                     val currentQuery = searchInput.text?.toString()?.lowercase() ?: ""
                     if (currentQuery.isEmpty()) {
@@ -442,16 +429,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showCertOptionsDialog(certName: String, onActionComplete: () -> Unit) {
+        val actualName = certName.substringBefore(" [")
         AlertDialog.Builder(this)
-            .setTitle("Chọn thao tác cho: $certName")
+            .setTitle("Chọn thao tác cho: $actualName")
             .setItems(arrayOf("Cài đặt chứng chỉ", "Xóa chứng chỉ")) { _, which ->
                 when (which) {
-                    0 -> { // Install
-                        installFromSaved(certName)
+                    0 -> {
+                        installFromSaved(actualName)
                         onActionComplete()
                     }
-                    1 -> { // Delete
-                        confirmDeleteCert(certName, onActionComplete)
+                    1 -> {
+                        confirmDeleteCert(actualName, onActionComplete)
                     }
                 }
             }
@@ -541,7 +529,7 @@ class MainActivity : ComponentActivity() {
         var i = 0
         while (i < b64.length) {
             val e = kotlin.math.min(i + 64, b64.length)
-            sb.append(b64.substring(i, e)).append("\\n")
+            sb.append(b64.substring(i, e)).append("\n")
             i = e
         }
         return sb.toString()
@@ -549,7 +537,7 @@ class MainActivity : ComponentActivity() {
 
     private fun derToPem(der: ByteArray): String {
         val b64 = Base64.encodeToString(der, Base64.NO_WRAP)
-        return "-----BEGIN CERTIFICATE-----\\n" + wrap64(b64) + "-----END CERTIFICATE-----\\n"
+        return "-----BEGIN CERTIFICATE-----\n" + wrap64(b64) + "-----END CERTIFICATE-----\n"
     }
 
     private fun x509FromDer(der: ByteArray): X509Certificate {
@@ -559,7 +547,7 @@ class MainActivity : ComponentActivity() {
 
     private fun x509FromPemBlock(block: String): X509Certificate {
         val cf = CertificateFactory.getInstance("X.509")
-        val norm = block.replace("\\r\\n", "\\n").replace("\\r", "\\n")
+        val norm = block.replace("\r\n", "\n").replace("\r", "\n")
         return cf.generateCertificate(ByteArrayInputStream(norm.toByteArray(Charsets.US_ASCII))) as X509Certificate
     }
 
@@ -574,7 +562,7 @@ class MainActivity : ComponentActivity() {
         val outFile = File(cacheDir, "upload_cert.pem")
 
         if (isPem(bytes)) {
-            val text = bytes.toString(Charsets.US_ASCII).replace("\\r\\n", "\\n").replace("\\r", "\\n")
+            val text = bytes.toString(Charsets.US_ASCII).replace("\r\n", "\n").replace("\r", "\n")
             val blocks = findPemBlocks(text)
             if (blocks.isEmpty()) throw IllegalArgumentException("PEM không chứa CERTIFICATE block.")
             var chosen: String? = null
@@ -585,7 +573,7 @@ class MainActivity : ComponentActivity() {
                     if (chosen == null) chosen = b
                 } catch (_: Exception) {}
             }
-            outFile.writeText(chosen!!, Charsets.US_ASCII)
+            outFile.writeText(chosen!! + "\n", Charsets.US_ASCII)
             return outFile
         }
 
