@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity() {
             val result = Shell.cmd(*cmds.toTypedArray()).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài chứng chỉ thành công.\nĐường dẫn: $destPath")
-                promptSaveCert(pemFile) { promptRestartAfterInstall() }
+                promptSaveCert(pemFile) { applyCertWithoutReboot() }
             } else {
                 val err = (result.out + result.err).joinToString("\n")
                 setStatus("Lỗi khi thực thi lệnh root.\n$err")
@@ -127,17 +127,87 @@ class MainActivity : ComponentActivity() {
 
     private fun promptRestartAfterInstall() {
         AlertDialog.Builder(this)
-            .setTitle("Khởi động lại thiết bị?")
-            .setMessage("Chứng chỉ đã được cài đặt thành công!\n\n⚠️ LƯU Ý: Bạn cần khởi động lại thiết bị để các thay đổi được áp dụng hoàn toàn.")
-            .setPositiveButton("Khởi động lại ngay") { _, _ ->
+            .setTitle("Áp dụng chứng chỉ")
+            .setMessage("Chứng chỉ đã được cài đặt thành công!\n\nChọn cách áp dụng:\n• Áp dụng ngay: Inject cert vào hệ thống (không cần reboot)\n• Khởi động lại: Reboot để áp dụng vĩnh viễn\n• Để sau: Tự xử lý sau")
+            .setPositiveButton("Áp dụng ngay") { _, _ ->
+                applyCertWithoutReboot()
+            }
+            .setNeutralButton("Khởi động lại") { _, _ ->
                 startRebootCountdown(5)
             }
             .setNegativeButton("Để sau") { _, _ ->
-                binding.tvCountdown.text = "💡 Nhắc nhở: Hãy khởi động lại thiết bị để chứng chỉ có hiệu lực!"
+                binding.tvCountdown.text = "💡 Nhắc nhở: Hãy áp dụng hoặc khởi động lại thiết bị để chứng chỉ có hiệu lực!"
                 setButtonsEnabled(true)
             }
             .setCancelable(false)
             .show()
+    }
+
+    private fun applyCertWithoutReboot() {
+        setStatus("Đang inject chứng chỉ vào hệ thống...")
+        binding.tvCountdown.text = "⏳ Đang xử lý..."
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val certFileName = destPath.substringAfterLast("/")
+                val tempDir = "/data/local/tmp/tmp-ca-copy"
+                val systemCerts = "/system/etc/security/cacerts"
+                val apexCerts = "/apex/com.android.conscrypt/cacerts"
+                
+                val script = """
+#!/system/bin/sh
+rm -rf $tempDir
+mkdir -p -m 700 $tempDir
+cp $apexCerts/* $tempDir/ 2>/dev/null || cp $systemCerts/* $tempDir/ 2>/dev/null || true
+mount -t tmpfs tmpfs $systemCerts
+mv $tempDir/* $systemCerts/ 2>/dev/null || true
+cp $destPath $systemCerts/$certFileName
+chown root:root $systemCerts/*
+chmod 644 $systemCerts/*
+chcon u:object_r:system_file:s0 $systemCerts/*
+rm -rf $tempDir
+
+ZYGOTE_PID=${'$'}(pidof zygote || true)
+ZYGOTE64_PID=${'$'}(pidof zygote64 || true)
+
+for Z_PID in ${'$'}ZYGOTE_PID ${'$'}ZYGOTE64_PID; do
+    [ -n "${'$'}Z_PID" ] && nsenter --mount=/proc/${'$'}Z_PID/ns/mnt -- /bin/mount --bind $systemCerts $apexCerts 2>/dev/null
+done
+
+APP_PIDS=${'$'}(echo "${'$'}ZYGOTE_PID ${'$'}ZYGOTE64_PID" | xargs -n1 ps -o 'PID' -P 2>/dev/null | grep -v PID || true)
+for PID in ${'$'}APP_PIDS; do
+    nsenter --mount=/proc/${'$'}PID/ns/mnt -- /bin/mount --bind $systemCerts $apexCerts 2>/dev/null &
+done
+wait
+""".trimIndent()
+                
+                val scriptPath = "/data/local/tmp/inject_cert.sh"
+                Shell.cmd("cat > $scriptPath << 'EOFSCRIPT'\n$script\nEOFSCRIPT").exec()
+                Shell.cmd("chmod 755 $scriptPath").exec()
+                val result = Shell.cmd("nsenter -t 1 -m -- sh $scriptPath").exec()
+                Shell.cmd("rm -f $scriptPath").exec()
+                
+                val success = Shell.cmd("nsenter -t 1 -m -- ls $systemCerts/$certFileName").exec().isSuccess
+                
+                runOnUiThread {
+                    if (success) {
+                        setStatus("✅ Đã inject chứng chỉ thành công!\n\nChứng chỉ đã được áp dụng cho tất cả ứng dụng.")
+                        binding.tvCountdown.text = "✅ Hoàn tất!"
+                    } else {
+                        val err = (result.out + result.err).joinToString("\n")
+                        setStatus("❌ Lỗi khi inject chứng chỉ:\n$err")
+                        binding.tvCountdown.text = "❌ Thất bại"
+                    }
+                    setButtonsEnabled(true)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    setStatus("❌ Lỗi: ${e.message}")
+                    binding.tvCountdown.text = "❌ Inject thất bại"
+                    setButtonsEnabled(true)
+                }
+            }
+        }
     }
 
     private fun startRebootCountdown(seconds: Int) {
@@ -385,6 +455,9 @@ class MainActivity : ComponentActivity() {
         val adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_list_item_1, filteredNames)
         listView.adapter = adapter
 
+        // Create dialog first so we can reference it in callbacks
+        lateinit var dialog: AlertDialog
+
         searchInput.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -403,10 +476,13 @@ class MainActivity : ComponentActivity() {
         listView.setOnItemClickListener { _, _, position, _ ->
             if (position < filteredNames.size) {
                 val selectedName = filteredNames[position]
-                showCertOptionsDialog(selectedName) {
+                showCertOptionsDialog(selectedName, onInstall = {
+                    dialog.dismiss()
+                }, onDelete = {
                     val updatedNames = listSavedNames()
                     if (updatedNames.isEmpty()) {
                         Toast.makeText(this, "Không còn chứng chỉ nào được lưu.", Toast.LENGTH_SHORT).show()
+                        dialog.dismiss()
                         return@showCertOptionsDialog
                     }
                     filteredNames.clear()
@@ -417,18 +493,19 @@ class MainActivity : ComponentActivity() {
                         filteredNames.addAll(updatedNames.filter { it.lowercase().contains(currentQuery) })
                     }
                     adapter.notifyDataSetChanged()
-                }
+                })
             }
         }
 
-        AlertDialog.Builder(this)
+        dialog = AlertDialog.Builder(this)
             .setTitle("Quản lý chứng chỉ đã lưu (${originalNames.size} chứng chỉ)")
             .setView(container)
             .setNegativeButton("Đóng", null)
-            .show()
+            .create()
+        dialog.show()
     }
 
-    private fun showCertOptionsDialog(certName: String, onActionComplete: () -> Unit) {
+    private fun showCertOptionsDialog(certName: String, onInstall: () -> Unit, onDelete: () -> Unit) {
         val actualName = certName.substringBefore(" [")
         AlertDialog.Builder(this)
             .setTitle("Chọn thao tác cho: $actualName")
@@ -436,10 +513,10 @@ class MainActivity : ComponentActivity() {
                 when (which) {
                     0 -> {
                         installFromSaved(actualName)
-                        onActionComplete()
+                        onInstall()
                     }
                     1 -> {
-                        confirmDeleteCert(actualName, onActionComplete)
+                        confirmDeleteCert(actualName, onDelete)
                     }
                 }
             }
@@ -490,7 +567,7 @@ class MainActivity : ComponentActivity() {
             val result = Shell.cmd(*cmds).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài từ chứng chỉ đã lưu: $name\n$destPath")
-                promptRestartAfterInstall()
+                applyCertWithoutReboot()
             } else {
                 val err = (result.out + result.err).joinToString("\n")
                 setStatus("Lỗi root khi cài từ chứng chỉ đã lưu.\n$err")
