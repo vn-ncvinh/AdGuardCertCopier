@@ -125,24 +125,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun promptRestartAfterInstall() {
-        AlertDialog.Builder(this)
-            .setTitle("Áp dụng chứng chỉ")
-            .setMessage("Chứng chỉ đã được cài đặt thành công!\n\nChọn cách áp dụng:\n• Áp dụng ngay: Inject cert vào hệ thống (không cần reboot)\n• Khởi động lại: Reboot để áp dụng vĩnh viễn\n• Để sau: Tự xử lý sau")
-            .setPositiveButton("Áp dụng ngay") { _, _ ->
-                applyCertWithoutReboot()
-            }
-            .setNeutralButton("Khởi động lại") { _, _ ->
-                startRebootCountdown(5)
-            }
-            .setNegativeButton("Để sau") { _, _ ->
-                binding.tvCountdown.text = "💡 Nhắc nhở: Hãy áp dụng hoặc khởi động lại thiết bị để chứng chỉ có hiệu lực!"
-                setButtonsEnabled(true)
-            }
-            .setCancelable(false)
-            .show()
-    }
-
     private fun applyCertWithoutReboot() {
         setStatus("Đang inject chứng chỉ vào hệ thống...")
         binding.tvCountdown.text = "⏳ Đang xử lý..."
