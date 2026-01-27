@@ -30,7 +30,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var binding: ActivityMainBinding
 
     private val destDir  = "/data/adb/modules/adguardcert/system/etc/security/cacerts"
-    private val destPath = "$destDir/9a5ba575.0"
     
     // OkHttp client for downloading certificates
     private val httpClient = OkHttpClient.Builder()
@@ -103,6 +102,9 @@ class MainActivity : ComponentActivity() {
             setButtonsEnabled(false)
 
             val pemFile = ensurePemFromUri(uri, pkcs12Password)
+            val cert = x509FromPemFile(pemFile)
+            val hash = getSubjectHash(cert)
+            val destPath = "$destDir/$hash.0"
 
             val cmds = listOf(
                 "mkdir -p \"$destDir\"",
@@ -113,7 +115,6 @@ class MainActivity : ComponentActivity() {
             val result = Shell.cmd(*cmds.toTypedArray()).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài chứng chỉ thành công.\nĐường dẫn: $destPath")
-                // promptSaveCert(pemFile) { applyCertWithoutReboot() }
                 promptSaveCert(pemFile) { startRebootCountdown(3) }
             } else {
                 val err = (result.out + result.err).joinToString("\n")
@@ -123,73 +124,6 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             setStatus("Lỗi: ${e.message ?: e.toString()}")
             setButtonsEnabled(true)
-        }
-    }
-
-    private fun applyCertWithoutReboot() {
-        setStatus("Đang inject chứng chỉ vào hệ thống...")
-        binding.tvCountdown.text = "⏳ Đang xử lý..."
-
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val certFileName = destPath.substringAfterLast("/")
-                val tempDir = "/data/local/tmp/tmp-ca-copy"
-                val systemCerts = "/system/etc/security/cacerts"
-                val apexCerts = "/apex/com.android.conscrypt/cacerts"
-                
-                val script = """
-#!/system/bin/sh
-rm -rf $tempDir
-mkdir -p -m 700 $tempDir
-cp $apexCerts/* $tempDir/ 2>/dev/null || cp $systemCerts/* $tempDir/ 2>/dev/null || true
-mount -t tmpfs tmpfs $systemCerts
-mv $tempDir/* $systemCerts/ 2>/dev/null || true
-cp $destPath $systemCerts/$certFileName
-chown root:root $systemCerts/*
-chmod 644 $systemCerts/*
-chcon u:object_r:system_file:s0 $systemCerts/*
-rm -rf $tempDir
-
-ZYGOTE_PID=${'$'}(pidof zygote || true)
-ZYGOTE64_PID=${'$'}(pidof zygote64 || true)
-
-for Z_PID in ${'$'}ZYGOTE_PID ${'$'}ZYGOTE64_PID; do
-    [ -n "${'$'}Z_PID" ] && nsenter --mount=/proc/${'$'}Z_PID/ns/mnt -- /bin/mount --bind $systemCerts $apexCerts 2>/dev/null
-done
-
-APP_PIDS=${'$'}(echo "${'$'}ZYGOTE_PID ${'$'}ZYGOTE64_PID" | xargs -n1 ps -o 'PID' -P 2>/dev/null | grep -v PID || true)
-for PID in ${'$'}APP_PIDS; do
-    nsenter --mount=/proc/${'$'}PID/ns/mnt -- /bin/mount --bind $systemCerts $apexCerts 2>/dev/null &
-done
-wait
-""".trimIndent()
-                
-                val scriptPath = "/data/local/tmp/inject_cert.sh"
-                Shell.cmd("cat > $scriptPath << 'EOFSCRIPT'\n$script\nEOFSCRIPT").exec()
-                Shell.cmd("chmod 755 $scriptPath").exec()
-                val result = Shell.cmd("nsenter -t 1 -m -- sh $scriptPath").exec()
-                Shell.cmd("rm -f $scriptPath").exec()
-                
-                val success = Shell.cmd("nsenter -t 1 -m -- ls $systemCerts/$certFileName").exec().isSuccess
-                
-                runOnUiThread {
-                    if (success) {
-                        setStatus("✅ Đã inject chứng chỉ thành công!\n\nChứng chỉ đã được áp dụng cho tất cả ứng dụng.")
-                        binding.tvCountdown.text = "✅ Hoàn tất!"
-                    } else {
-                        val err = (result.out + result.err).joinToString("\n")
-                        setStatus("❌ Lỗi khi inject chứng chỉ:\n$err")
-                        binding.tvCountdown.text = "❌ Thất bại"
-                    }
-                    setButtonsEnabled(true)
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    setStatus("❌ Lỗi: ${e.message}")
-                    binding.tvCountdown.text = "❌ Inject thất bại"
-                    setButtonsEnabled(true)
-                }
-            }
         }
     }
 
@@ -541,6 +475,10 @@ wait
             }
 
             setButtonsEnabled(false)
+            val cert = x509FromPemFile(f)
+            val hash = getSubjectHash(cert)
+            val destPath = "$destDir/$hash.0"
+            
             val cmds = arrayOf(
                 "mkdir -p \"$destDir\"",
                 "cp \"${f.absolutePath}\" \"$destPath\"",
@@ -550,7 +488,6 @@ wait
             val result = Shell.cmd(*cmds).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài từ chứng chỉ đã lưu: $name\n$destPath")
-                // applyCertWithoutReboot()
                 startRebootCountdown(3)
             } else {
                 val err = (result.out + result.err).joinToString("\n")
@@ -614,6 +551,29 @@ wait
 
     private fun isCA(cert: X509Certificate): Boolean {
         return try { cert.basicConstraints >= 0 } catch (_: Exception) { false }
+    }
+
+    private fun getSubjectHash(cert: X509Certificate): String {
+        try {
+            val subject = cert.subjectX500Principal.encoded
+            val digest = MessageDigest.getInstance("MD5")
+            val hash = digest.digest(subject)
+            
+            // Convert first 4 bytes to little-endian unsigned long (giống OpenSSL subject_hash_old)
+            val value = ((hash[0].toInt() and 0xff) or
+                        ((hash[1].toInt() and 0xff) shl 8) or
+                        ((hash[2].toInt() and 0xff) shl 16) or
+                        ((hash[3].toInt() and 0xff) shl 24)).toLong() and 0xffffffffL
+            
+            return String.format("%08x", value)
+        } catch (e: Exception) {
+            throw RuntimeException("Không thể tính subject hash: ${e.message}", e)
+        }
+    }
+
+    private fun x509FromPemFile(file: File): X509Certificate {
+        val pem = file.readText(Charsets.US_ASCII)
+        return x509FromPemBlock(pem)
     }
 
     private fun ensurePemFromUri(uri: Uri, pkcs12Password: String?): File {
