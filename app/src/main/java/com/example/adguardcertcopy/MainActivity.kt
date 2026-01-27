@@ -113,7 +113,8 @@ class MainActivity : ComponentActivity() {
             val result = Shell.cmd(*cmds.toTypedArray()).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài chứng chỉ thành công.\nĐường dẫn: $destPath")
-                promptSaveCert(pemFile) { applyCertWithoutReboot() }
+                // promptSaveCert(pemFile) { applyCertWithoutReboot() }
+                promptSaveCert(pemFile) { startRebootCountdown(3) }
             } else {
                 val err = (result.out + result.err).joinToString("\n")
                 setStatus("Lỗi khi thực thi lệnh root.\n$err")
@@ -549,7 +550,8 @@ wait
             val result = Shell.cmd(*cmds).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài từ chứng chỉ đã lưu: $name\n$destPath")
-                applyCertWithoutReboot()
+                // applyCertWithoutReboot()
+                startRebootCountdown(3)
             } else {
                 val err = (result.out + result.err).joinToString("\n")
                 setStatus("Lỗi root khi cài từ chứng chỉ đã lưu.\n$err")
