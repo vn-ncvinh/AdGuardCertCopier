@@ -21,7 +21,6 @@ AdGuard Certificate Copier là một ứng dụng Android giúp người dùng d
 - **Hỗ trợ nhiều định dạng**: PEM, DER, PKCS#12 (.p12/.pfx)
 - **Tự động chuyển đổi**: Chuyển tất cả định dạng về PEM
 - **Ưu tiên CA**: Tự động chọn Certificate Authority nếu có nhiều chứng chỉ
-- **Cài đặt hệ thống**: Cài vào `/data/adb/modules/adguardcert/system/etc/security/cacerts/`
 
 ### 🌐 Tải chứng chỉ từ Burp Suite
 - **Kết nối trực tiếp**: Tải chứng chỉ CA từ Burp Suite qua HTTP
@@ -38,16 +37,32 @@ AdGuard Certificate Copier là một ứng dụng Android giúp người dùng d
 - **Xác nhận an toàn**: Dialog xác nhận trước khi xóa
 
 ### 🔄 Tự động hóa
-- **Reboot tự động**: Đếm ngược 5 giây và khởi động lại sau cài đặt
+- **Reboot tự động**: Đếm ngược 3 giây và khởi động lại sau cài đặt
 - **Thông báo rõ ràng**: Hiển thị trạng thái và lỗi chi tiết
-- **UI responsive**: Vô hiệu hóa nút khi đang xử lý
 
 ## 📱 Yêu cầu hệ thống
 
 - **Android**: API Level 24+ (Android 7.0+)
 - **Root**: Thiết bị phải đã root (Magisk khuyến nghị)
+- **Module Magisk**: `adguardcert-v2.1.zip` phải được cài đặt trước
 - **Quyền**: Internet, Network State
 - **Storage**: Minimal (~10MB)
+
+### 📦 Cài đặt Module Magisk
+
+**⚠️ Quan trọng**: Trước khi sử dụng ứng dụng, bạn phải cài đặt module Magisk `adguardcert-v2.1.zip`:
+
+1. **Mở Magisk Manager** trên thiết bị
+2. **Chọn Modules**
+3. **Chọn "Install from storage"** (hoặc nút +)
+4. **Tìm file** `adguardcert-v2.1.zip`
+5. **Chọn và cài đặt** module
+6. **Khởi động lại** thiết bị khi được yêu cầu
+7. **Xác nhận** module đã được cài (sẽ xuất hiện trong danh sách modules)
+
+**Module này cung cấp:**
+- Thư mục `/data/adb/modules/adguardcert/system/etc/security/cacerts/` để lưu chứng chỉ
+- Tích hợp với hệ thống Magisk để quản lý chứng chỉ hệ thống
 
 ## 🚀 Cài đặt và Sử dụng
 
@@ -64,7 +79,7 @@ AdGuard Certificate Copier là một ứng dụng Android giúp người dùng d
 3. Nhập mật khẩu nếu là file PKCS#12
 4. Chờ ứng dụng xử lý và cài đặt
 5. Chọn lưu chứng chỉ để sử dụng sau (tùy chọn)
-6. Khởi động lại thiết bị khi được yêu cầu
+6. Ứng dụng sẽ **đếm ngược 3 giây** và **khởi động lại** thiết bị tự động
 
 #### 🌐 Tải từ Burp Suite
 1. **Khởi động Burp Suite** và bật Proxy listener
@@ -72,7 +87,7 @@ AdGuard Certificate Copier là một ứng dụng Android giúp người dùng d
 3. Nhập **IP Address** (mặc định: 192.168.4.100)
 4. Nhập **Port** (mặc định: 8080)
 5. Nhấn **"Tải"** để tải chứng chỉ CA
-6. Chờ cài đặt hoàn tất và khởi động lại
+6. Ứng dụng sẽ **đếm ngược 3 giây** và **khởi động lại** thiết bị tự động
 
 #### 🗂️ Quản lý chứng chỉ đã lưu
 1. Chọn **"Quản lý chứng chỉ đã lưu"**
@@ -80,6 +95,7 @@ AdGuard Certificate Copier là một ứng dụng Android giúp người dùng d
 3. **Cuộn**: Vuốt lên/xuống nếu danh sách dài
 4. **Click chứng chỉ**: Chọn "Cài đặt" hoặc "Xóa"
 5. **Xác nhận**: Confirm khi xóa chứng chỉ
+6. **Cài đặt**: Ứng dụng sẽ **đếm ngược 3 giây** và **khởi động lại** thiết bị tự động
 
 ## 🏗️ Build từ Source
 
