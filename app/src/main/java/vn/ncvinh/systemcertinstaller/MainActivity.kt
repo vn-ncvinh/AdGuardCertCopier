@@ -1,7 +1,9 @@
 
-package com.example.adguardcertcopy
+package vn.ncvinh.systemcertinstaller
 
 import android.app.AlertDialog
+import android.content.ComponentName
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.CountDownTimer
@@ -11,7 +13,7 @@ import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
-import com.example.adguardcertcopy.databinding.ActivityMainBinding
+import vn.ncvinh.systemcertinstaller.databinding.ActivityMainBinding
 import com.topjohnwu.superuser.Shell
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -74,6 +76,12 @@ class MainActivity : ComponentActivity() {
         binding.btnSaved.setOnClickListener {
             showSavedListAndInstall()
         }
+        binding.btnCheckCerts.setOnClickListener {
+            openTrustedCredentials()
+        }
+        binding.btnReboot.setOnClickListener {
+            confirmAndReboot()
+        }
     }
 
     private fun looksLikePkcs12(uri: Uri): Boolean {
@@ -115,7 +123,13 @@ class MainActivity : ComponentActivity() {
             val result = Shell.cmd(*cmds.toTypedArray()).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài chứng chỉ thành công.\nĐường dẫn: $destPath")
-                promptSaveCert(pemFile) { startRebootCountdown(3) }
+                promptSaveCert(pemFile) { 
+                    if (binding.switchAutoReboot.isChecked) {
+                        startRebootCountdown(3)
+                    } else {
+                        applyCertWithoutReboot()
+                    }
+                }
             } else {
                 val err = (result.out + result.err).joinToString("\n")
                 setStatus("Lỗi khi thực thi lệnh root.\n$err")
@@ -151,6 +165,43 @@ class MainActivity : ComponentActivity() {
         binding.btnPick.isEnabled = enabled
         binding.btnDownloadFromUrl.isEnabled = enabled
         binding.btnSaved.isEnabled = enabled
+        binding.btnCheckCerts.isEnabled = enabled
+        binding.btnReboot.isEnabled = enabled
+    }
+
+    private fun openTrustedCredentials() {
+        try {
+            val intent = Intent().apply {
+                component = ComponentName(
+                    "com.android.settings",
+                    "com.android.settings.Settings\$TrustedCredentialsSettingsActivity"
+                )
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            // Fallback: open security settings
+            try {
+                startActivity(Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS))
+            } catch (e2: Exception) {
+                Toast.makeText(this, "Không thể mở cài đặt chứng chỉ: ${e2.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun confirmAndReboot() {
+        AlertDialog.Builder(this)
+            .setTitle("Xác nhận reboot")
+            .setMessage("Bạn có chắc chắn muốn khởi động lại thiết bị?")
+            .setPositiveButton("Reboot") { _, _ ->
+                val res = Shell.cmd(
+                    "svc power reboot || reboot || setprop sys.powerctl reboot"
+                ).exec()
+                if (!res.isSuccess) {
+                    Toast.makeText(this, "Không thể reboot. Vui lòng reboot thủ công.", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
     }
 
     private fun showBurpSuiteDownloadDialog() {
@@ -488,7 +539,11 @@ class MainActivity : ComponentActivity() {
             val result = Shell.cmd(*cmds).exec()
             if (result.isSuccess) {
                 setStatus("Đã cài từ chứng chỉ đã lưu: $name\n$destPath")
-                startRebootCountdown(3)
+                if (binding.switchAutoReboot.isChecked) {
+                    startRebootCountdown(3)
+                } else {
+                    applyCertWithoutReboot()
+                }
             } else {
                 val err = (result.out + result.err).joinToString("\n")
                 setStatus("Lỗi root khi cài từ chứng chỉ đã lưu.\n$err")
@@ -629,6 +684,72 @@ class MainActivity : ComponentActivity() {
 
     private fun setStatus(msg: String) {
         binding.tvStatus.text = msg
+    }
+
+    private fun applyCertWithoutReboot() {
+        setStatus("Đang inject chứng chỉ vào hệ thống...")
+        binding.tvCountdown.text = "⏳ Đang xử lý..."
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val tempDir = "/data/local/tmp/tmp-ca-copy"
+                val systemCerts = "/system/etc/security/cacerts"
+                val apexCerts = "/apex/com.android.conscrypt/cacerts"
+                
+                val script = """
+#!/system/bin/sh
+rm -rf $tempDir
+mkdir -p -m 700 $tempDir
+cp $apexCerts/* $tempDir/ 2>/dev/null || cp $systemCerts/* $tempDir/ 2>/dev/null || true
+mount -t tmpfs tmpfs $systemCerts
+mv $tempDir/* $systemCerts/ 2>/dev/null || true
+cp $destDir/* $systemCerts/ 2>/dev/null || true
+chown root:root $systemCerts/*
+chmod 644 $systemCerts/*
+chcon u:object_r:system_file:s0 $systemCerts/*
+rm -rf $tempDir
+
+ZYGOTE_PID=${'$'}(pidof zygote || true)
+ZYGOTE64_PID=${'$'}(pidof zygote64 || true)
+
+for Z_PID in ${'$'}ZYGOTE_PID ${'$'}ZYGOTE64_PID; do
+    [ -n "${'$'}Z_PID" ] && nsenter --mount=/proc/${'$'}Z_PID/ns/mnt -- /bin/mount --bind $systemCerts $apexCerts 2>/dev/null
+done
+
+APP_PIDS=${'$'}(echo "${'$'}ZYGOTE_PID ${'$'}ZYGOTE64_PID" | xargs -n1 ps -o 'PID' -P 2>/dev/null | grep -v PID || true)
+for PID in ${'$'}APP_PIDS; do
+    nsenter --mount=/proc/${'$'}PID/ns/mnt -- /bin/mount --bind $systemCerts $apexCerts 2>/dev/null &
+done
+wait
+""".trimIndent()
+                
+                val scriptPath = "/data/local/tmp/inject_cert.sh"
+                Shell.cmd("cat > $scriptPath << 'EOFSCRIPT'\n$script\nEOFSCRIPT").exec()
+                Shell.cmd("chmod 755 $scriptPath").exec()
+                val result = Shell.cmd("nsenter -t 1 -m -- sh $scriptPath").exec()
+                Shell.cmd("rm -f $scriptPath").exec()
+                
+                val success = Shell.cmd("nsenter -t 1 -m -- ls $systemCerts/*.0 2>/dev/null").exec().isSuccess
+                
+                runOnUiThread {
+                    if (success) {
+                        setStatus("✅ Đã inject chứng chỉ thành công!\n\nChứng chỉ đã được áp dụng cho tất cả ứng dụng.")
+                        binding.tvCountdown.text = "✅ Hoàn tất!"
+                    } else {
+                        val err = (result.out + result.err).joinToString("\n")
+                        setStatus("❌ Lỗi khi inject chứng chỉ:\n$err")
+                        binding.tvCountdown.text = "❌ Thất bại"
+                    }
+                    setButtonsEnabled(true)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    setStatus("❌ Lỗi: ${e.message}")
+                    binding.tvCountdown.text = "❌ Inject thất bại"
+                    setButtonsEnabled(true)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
