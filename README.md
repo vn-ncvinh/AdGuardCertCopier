@@ -173,10 +173,8 @@ Dự án này được phân phối dưới **MIT License**. Xem file [LICENSE](
 
 ## 🙏 Acknowledgments
 
+- **[AdguardTeam/adguardcert](https://github.com/AdguardTeam/adguardcert)** - Magisk module that allows using AdGuard's HTTPS filtering for all apps
 - **[topjohnwu/libsu](https://github.com/topjohnwu/libsu)** - Root access library
-- **[square/okhttp](https://github.com/square/okhttp)** - HTTP client
-- **Android Open Source Project** - Android framework
-- **Burp Suite** - Security testing platform inspiration
 
 ## 📞 Liên hệ
 
