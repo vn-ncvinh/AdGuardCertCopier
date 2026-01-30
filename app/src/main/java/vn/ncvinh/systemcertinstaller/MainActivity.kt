@@ -31,7 +31,8 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
-    private val destDir  = "/data/adb/modules/adguardcert/system/etc/security/cacerts"
+    private val moduleDir = "/data/adb/modules/adguardcert"
+    private val destDir  = "$moduleDir/system/etc/security/cacerts"
     
     // OkHttp client for downloading certificates
     private val httpClient = OkHttpClient.Builder()
@@ -114,6 +115,7 @@ class MainActivity : ComponentActivity() {
             val hash = getSubjectHash(cert)
             val destPath = "$destDir/$hash.0"
 
+            // Create module directory and copy cert
             val cmds = listOf(
                 "mkdir -p \"$destDir\"",
                 "cp \"${pemFile.absolutePath}\" \"$destPath\"",
@@ -121,6 +123,10 @@ class MainActivity : ComponentActivity() {
                 "chown 0:0 \"$destPath\""
             )
             val result = Shell.cmd(*cmds.toTypedArray()).exec()
+            
+            // Create module files
+            createModuleFiles()
+            
             if (result.isSuccess) {
                 setStatus("Đã cài chứng chỉ thành công.\nĐường dẫn: $destPath")
                 promptSaveCert(pemFile) { 
@@ -139,6 +145,36 @@ class MainActivity : ComponentActivity() {
             setStatus("Lỗi: ${e.message ?: e.toString()}")
             setButtonsEnabled(true)
         }
+    }
+
+    private fun createModuleFiles() {
+        // Copy module files from assets to module directory
+        val modulePropPath = "$moduleDir/module.prop"
+        val postFsDataPath = "$moduleDir/post-fs-data.sh"
+        
+        // Read files from assets
+        val modulePropContent = assets.open("module.prop").bufferedReader().use { it.readText() }
+        val postFsDataContent = assets.open("post-fs-data.sh").bufferedReader().use { it.readText() }
+        
+        // Write to temp files first, then copy with root
+        val tempModuleProp = File(cacheDir, "module.prop")
+        val tempPostFsData = File(cacheDir, "post-fs-data.sh")
+        
+        tempModuleProp.writeText(modulePropContent)
+        tempPostFsData.writeText(postFsDataContent)
+        
+        Shell.cmd(
+            "cp \"${tempModuleProp.absolutePath}\" \"$modulePropPath\"",
+            "chmod 0644 \"$modulePropPath\"",
+            "chown 0:0 \"$modulePropPath\"",
+            "cp \"${tempPostFsData.absolutePath}\" \"$postFsDataPath\"",
+            "chmod 0755 \"$postFsDataPath\"",
+            "chown 0:0 \"$postFsDataPath\""
+        ).exec()
+        
+        // Clean up temp files
+        tempModuleProp.delete()
+        tempPostFsData.delete()
     }
 
     private fun startRebootCountdown(seconds: Int) {
@@ -537,6 +573,10 @@ class MainActivity : ComponentActivity() {
                 "chown 0:0 \"$destPath\""
             )
             val result = Shell.cmd(*cmds).exec()
+            
+            // Create module files
+            createModuleFiles()
+            
             if (result.isSuccess) {
                 setStatus("Đã cài từ chứng chỉ đã lưu: $name\n$destPath")
                 if (binding.switchAutoReboot.isChecked) {
@@ -692,41 +732,22 @@ class MainActivity : ComponentActivity() {
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val tempDir = "/data/local/tmp/tmp-ca-copy"
                 val systemCerts = "/system/etc/security/cacerts"
-                val apexCerts = "/apex/com.android.conscrypt/cacerts"
-                
-                val script = """
-#!/system/bin/sh
-rm -rf $tempDir
-mkdir -p -m 700 $tempDir
-cp $apexCerts/* $tempDir/ 2>/dev/null || cp $systemCerts/* $tempDir/ 2>/dev/null || true
-mount -t tmpfs tmpfs $systemCerts
-mv $tempDir/* $systemCerts/ 2>/dev/null || true
-cp $destDir/* $systemCerts/ 2>/dev/null || true
-chown root:root $systemCerts/*
-chmod 644 $systemCerts/*
-chcon u:object_r:system_file:s0 $systemCerts/*
-rm -rf $tempDir
-
-ZYGOTE_PID=${'$'}(pidof zygote || true)
-ZYGOTE64_PID=${'$'}(pidof zygote64 || true)
-
-for Z_PID in ${'$'}ZYGOTE_PID ${'$'}ZYGOTE64_PID; do
-    [ -n "${'$'}Z_PID" ] && nsenter --mount=/proc/${'$'}Z_PID/ns/mnt -- /bin/mount --bind $systemCerts $apexCerts 2>/dev/null
-done
-
-APP_PIDS=${'$'}(echo "${'$'}ZYGOTE_PID ${'$'}ZYGOTE64_PID" | xargs -n1 ps -o 'PID' -P 2>/dev/null | grep -v PID || true)
-for PID in ${'$'}APP_PIDS; do
-    nsenter --mount=/proc/${'$'}PID/ns/mnt -- /bin/mount --bind $systemCerts $apexCerts 2>/dev/null &
-done
-wait
-""".trimIndent()
-                
                 val scriptPath = "/data/local/tmp/inject_cert.sh"
-                Shell.cmd("cat > $scriptPath << 'EOFSCRIPT'\n$script\nEOFSCRIPT").exec()
-                Shell.cmd("chmod 755 $scriptPath").exec()
-                val result = Shell.cmd("nsenter -t 1 -m -- sh $scriptPath").exec()
+                
+                // Read script from assets and write to temp file
+                val scriptContent = assets.open("inject_cert.sh").bufferedReader().use { it.readText() }
+                val tempScript = File(cacheDir, "inject_cert.sh")
+                tempScript.writeText(scriptContent)
+                
+                // Copy script and execute with root
+                Shell.cmd(
+                    "cp \"${tempScript.absolutePath}\" \"$scriptPath\"",
+                    "chmod 755 \"$scriptPath\""
+                ).exec()
+                tempScript.delete()
+                
+                val result = Shell.cmd("nsenter -t 1 -m -- sh $scriptPath \"$destDir\"").exec()
                 Shell.cmd("rm -f $scriptPath").exec()
                 
                 val success = Shell.cmd("nsenter -t 1 -m -- ls $systemCerts/*.0 2>/dev/null").exec().isSuccess
